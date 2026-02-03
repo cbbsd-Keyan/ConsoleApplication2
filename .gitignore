@@ -1,0 +1,31 @@
+# VS2022 文件和目录
+.vs/
+*.sln.docstates
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.iml
+
+# 编译输出
+x64/
+Debug/
+Release/
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.log
+*.tlog
+
+# 中间文件
+*.cache
+*.tmp
+*.temp
+
+# 其他
+.ipch/
+*.sdf
+*.opensdf
+*.db
