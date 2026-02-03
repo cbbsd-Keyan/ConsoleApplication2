@@ -1,4 +1,3 @@
-// 修改后的 SmoothValue.h（主要看第34-44行）
 #pragma once
 #include <SFML/Graphics.hpp> // 为了支持 sf::Color 类型
 
