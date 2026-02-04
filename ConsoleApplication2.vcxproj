@@ -136,6 +136,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MusicTimeline.h" />
+    <ClInclude Include="pocketfft.h" />
     <ClInclude Include="SmoothValue.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

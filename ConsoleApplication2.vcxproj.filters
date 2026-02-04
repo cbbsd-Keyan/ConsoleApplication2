@@ -26,5 +26,8 @@
     <ClInclude Include="MusicTimeline.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="pocketfft.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

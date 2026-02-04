@@ -112,4 +112,4 @@ public:
 
 private:
     SmoothValue<float> m_r, m_g, m_b, m_a; // 分别处理R,G,B,A四个通道
-};
+}; 
