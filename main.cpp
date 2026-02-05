@@ -512,10 +512,10 @@ public:
     void update(float dt, float volume) {
         life -= dt * 0.5f;
         position += velocity * dt * 60.0f;
-        velocity.y += 0.1f; // 重力
+        velocity.y += 0.03f; // 重力
 
         // 根据音量调整大小
-        radius = 5.0f + volume * 40.0f;
+        radius = 8.0f + volume * 50.0f;
     }
 
     void draw(sf::RenderTarget& target) {
@@ -574,17 +574,6 @@ int main() {
 
     // 粒子系统
     std::vector<MusicParticle> particles;
-
-    // 中央能量圆环
-    sf::CircleShape energyCircle(50.0f);
-    energyCircle.setOrigin(50.0f, 50.0f);
-    energyCircle.setPosition(WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f);
-    energyCircle.setFillColor(sf::Color::Transparent);
-    energyCircle.setOutlineThickness(3.0f);
-    energyCircle.setOutlineColor(sf::Color::White);
-
-    SmoothValue<float> energyRadius(50.0f, 10.0f);
-    SmoothValue<sf::Color> energyColor(sf::Color::White, 5.0f);
 
     // 平滑音量
     SmoothValue<float> smoothedVolume(0.0f, 8.0f);
@@ -682,19 +671,21 @@ int main() {
         // 根据音量生成粒子
         if (isPlaying) {
             if (particleClock.getElapsedTime().asSeconds() > 0.05f) {
-                for (int i = 0; i < 3; i++) {
+                int particleCount = 2 + static_cast<int>(vol * 5.0f);
+                for (int i = 0; i < particleCount; i++) {
                     float angle = static_cast<float>(rand() % 360) * 3.14159f / 180.0f;
-                    float distance = 100.0f + vol * 200.0f;
+                    // 沿一个小圆环生成
+                    float circleRadius = 20.0f + vol * 50.0f;  // 圆环半径随音量变化
 
                     MusicParticle particle(
-                        WINDOW_WIDTH / 2.0f + cos(angle) * distance,
-                        WINDOW_HEIGHT / 2.0f + sin(angle) * distance
+                        WINDOW_WIDTH / 2.0f + cos(angle) * circleRadius,
+                        WINDOW_HEIGHT / 2.0f + sin(angle) * circleRadius
                     );
 
                     // 设置粒子速度和颜色
                     particle.velocity = sf::Vector2f(
-                        cos(angle) * 5.0f,
-                        sin(angle) * 5.0f
+                        cos(angle) * (2.5f + vol * 10.0f),  // 速度与音量相关
+                        sin(angle) * (2.5f + vol * 10.0f)
                     );
 
                     // 根据角度设置颜色
@@ -711,23 +702,6 @@ int main() {
             }
         }
 
-        // 更新能量圆环（使用真实音量）
-        float targetRadius = 50.0f + vol * 200.0f;
-        energyRadius.setTarget(targetRadius);
-        energyRadius.update(dt);
-
-        sf::Color targetColor = sf::Color(
-            100 + static_cast<sf::Uint8>(vol * 155),
-            150 + static_cast<sf::Uint8>(vol * 105),
-            220
-        );
-        energyColor.setTarget(targetColor);
-        energyColor.update(dt);
-
-        energyCircle.setRadius(energyRadius.getCurrent());
-        energyCircle.setOrigin(energyCircle.getRadius(), energyCircle.getRadius());
-        energyCircle.setOutlineColor(energyColor.getCurrent());
-
         // 更新和绘制粒子
         for (auto it = particles.begin(); it != particles.end();) {
             it->update(dt, vol);
@@ -740,9 +714,6 @@ int main() {
                 ++it;
             }
         }
-
-        // 绘制能量圆环
-        window.draw(energyCircle);
 
         // 绘制UI信息
         sf::Font font;
