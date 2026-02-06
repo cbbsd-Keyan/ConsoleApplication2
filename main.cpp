@@ -1,372 +1,229 @@
-﻿#include <SFML/Graphics.hpp>
+﻿// waveform_visualizer_english.cpp
+#include <SFML/Graphics.hpp>
 #include <SFML/Audio.hpp>
 #include <iostream>
 #include <cmath>
 #include <vector>
 #include <algorithm>
-#include <complex>
 #include "SmoothValue.h"
 
 const int WINDOW_WIDTH = 1200;
 const int WINDOW_HEIGHT = 800;
-const int FFT_SIZE = 1024;
-const int VISUAL_BANDS = 256;
+const int WAVEFORM_POINTS = 500;  // Number of waveform points
+const float WAVEFORM_HEIGHT = 300.0f;  // Waveform display height
 
-// 能量计算函数
-float calculateEnergy(const sf::Int16* samples, size_t count) {
+// Audio energy calculation function
+float calculateVolume(const sf::Int16* samples, size_t count) {
     if (count == 0) return 0.0f;
+
     float sumSquares = 0.0f;
     for (size_t i = 0; i < count; i++) {
         float sample = samples[i] / 32768.0f;
         sumSquares += sample * sample;
     }
+
     return std::sqrt(sumSquares / count);
 }
 
-// HSB到RGB转换函数
-sf::Color hsbToRgb(float hue, float saturation, float brightness) {
-    hue = fmod(hue, 360.0f);
-    if (hue < 0) hue += 360.0f;
-    saturation = std::clamp(saturation, 0.0f, 100.0f) / 100.0f;
-    brightness = std::clamp(brightness, 0.0f, 100.0f) / 100.0f;
-
-    float c = brightness * saturation;
-    float x = c * (1.0f - fabs(fmod(hue / 60.0f, 2.0f) - 1.0f));
-    float m = brightness - c;
-
-    float r = 0.0f, g = 0.0f, b = 0.0f;
-
-    if (hue >= 0 && hue < 60) {
-        r = c; g = x; b = 0;
-    }
-    else if (hue >= 60 && hue < 120) {
-        r = x; g = c; b = 0;
-    }
-    else if (hue >= 120 && hue < 180) {
-        r = 0; g = c; b = x;
-    }
-    else if (hue >= 180 && hue < 240) {
-        r = 0; g = x; b = c;
-    }
-    else if (hue >= 240 && hue < 300) {
-        r = x; g = 0; b = c;
-    }
-    else {
-        r = c; g = 0; b = x;
-    }
-
-    return sf::Color(
-        static_cast<sf::Uint8>((r + m) * 255),
-        static_cast<sf::Uint8>((g + m) * 255),
-        static_cast<sf::Uint8>((b + m) * 255)
-    );
-}
-
-// FFT实现
-void computeFFT(const std::vector<float>& input, std::vector<float>& spectrum) {
-    int N = input.size();
-    if (N == 0) return;
-
-    std::vector<std::complex<float>> data(N);
-    for (int i = 0; i < N; i++) {
-        data[i] = std::complex<float>(input[i], 0.0f);
-    }
-
-    int j = 0;
-    for (int i = 0; i < N; i++) {
-        if (j > i) {
-            std::swap(data[i], data[j]);
-        }
-
-        int m = N >> 1;
-        while (m >= 1 && j >= m) {
-            j -= m;
-            m >>= 1;
-        }
-        j += m;
-    }
-
-    for (int s = 1; s <= (int)std::log2(N); s++) {
-        int m = 1 << s;
-        float theta = -2.0f * 3.14159265358979323846f / m;
-        std::complex<float> wm(cos(theta), sin(theta));
-
-        for (int k = 0; k < N; k += m) {
-            std::complex<float> w(1.0f, 0.0f);
-            for (int j = 0; j < m / 2; j++) {
-                std::complex<float> t = w * data[k + j + m / 2];
-                std::complex<float> u = data[k + j];
-                data[k + j] = u + t;
-                data[k + j + m / 2] = u - t;
-                w *= wm;
-            }
-        }
-    }
-
-    spectrum.resize(N / 2);
-    for (int i = 0; i < N / 2; i++) {
-        spectrum[i] = std::abs(data[i]) / (N / 2);
-    }
-}
-
-// 优化后的 mapSpectrumToBands 函数
-std::vector<float> mapSpectrumToBands(const std::vector<float>& spectrum, int bands) {
-    std::vector<float> bandEnergies(bands, 0.0f);
-
-    int specSize = spectrum.size();
-    if (specSize == 0) return bandEnergies;
-
-    // 使用更合理的频带划分
-    int binsPerBand = specSize / bands;
-
-    // 动态调整频带划分，确保低频部分有足够分辨率
-    for (int band = 0; band < bands; band++) {
-        int startBin = 0;
-        int endBin = 0;
-
-        // 改进：让低频和高频的bin分布更均匀
-        if (band == 0) {
-            // 第一个频带：0-2个bin
-            startBin = 0;
-            endBin = 1;
-        }
-        else if (band < bands / 4) {
-            // 低频部分：逐步增加bin数量
-            startBin = (band - 1) * 2;
-            endBin = startBin + 2;
-        }
-        else if (band < bands / 2) {
-            // 中低频部分
-            startBin = (bands / 4 - 1) * 2 + (band - bands / 4) * 4;
-            endBin = startBin + 4;
-        }
-        else {
-            // 中高频和高频部分
-            int baseBin = (bands / 4 - 1) * 2 + (bands / 4) * 4;
-            startBin = baseBin + (band - bands / 2) * (specSize - baseBin) / (bands - bands / 2);
-            endBin = (band == bands - 1) ? specSize - 1 : startBin + (specSize - baseBin) / (bands - bands / 2);
-        }
-
-        // 确保索引在范围内
-        startBin = std::clamp(startBin, 0, specSize - 1);
-        endBin = std::clamp(endBin, startBin, specSize - 1);
-
-        // 使用平均值而不是最大值，使曲线更平滑
-        float sum = 0.0f;
-        int count = 0;
-        for (int i = startBin; i <= endBin && i < specSize; i++) {
-            sum += spectrum[i];
-            count++;
-        }
-        float avgVal = (count > 0) ? sum / count : 0.0f;
-
-        // 调整增益：减小低频增益，使整体更平衡
-        float gain = 1.0f;
-        if (band < bands / 8) {
-            gain = 1.5f;  // 减小低频增益
-        }
-        else if (band < bands / 4) {
-            gain = 1.3f;
-        }
-        else if (band < bands / 2) {
-            gain = 1.1f;
-        }
-
-        bandEnergies[band] = avgVal * gain;
-    }
-
-    return bandEnergies;
-}
-
-// ========== 修改的频率条类 ==========
-class FrequencyBars {
+// Waveform visualizer class
+class WaveformVisualizer {
 private:
-    std::vector<sf::RectangleShape> bars;
-    std::vector<SmoothValue<float>> barHeights;
-    int barCount;
-    float barWidth;
-    float maxHeight;
-    float spacing;  // 添加间距
+    sf::VertexArray waveform;  // Waveform vertex array
+    std::vector<float> audioBuffer;  // Audio buffer
+    float scaleFactor;  // Waveform scaling factor
 
 public:
-    // 修改 FrequencyBars 构造函数
-    FrequencyBars(int count, float maxH = 400.0f)
-        : barCount(count), maxHeight(maxH) {
+    WaveformVisualizer()
+        : waveform(sf::LineStrip, WAVEFORM_POINTS), scaleFactor(100.0f) {
 
-        // 修改：统一计算宽度和间距
-        float totalSpacing = (count - 1) * 1.0f;  // 1像素间距
-        float availableWidth = WINDOW_WIDTH - totalSpacing;
-        barWidth = availableWidth / count;  // 现在所有条宽度相同
-
-        std::cout << "Creating " << count << " frequency bars" << std::endl;
-        std::cout << "Bar width: " << barWidth << " pixels" << std::endl;
-        std::cout << "Total spacing: " << totalSpacing << " pixels" << std::endl;
-
-        // 创建所有条
-        for (int i = 0; i < count; i++) {
-            // 所有条使用相同宽度
-            sf::RectangleShape bar(sf::Vector2f(barWidth, 10));
-
-            // 计算x位置，考虑间距
-            float xPos = i * (barWidth + 1.0f);  // 1像素间距
-            bar.setPosition(xPos, WINDOW_HEIGHT);
-
-            // 设置初始颜色
-            bar.setFillColor(sf::Color::White);
-
-            // 添加细边框以便看清边界
-            bar.setOutlineThickness(0.5f);
-            bar.setOutlineColor(sf::Color(0, 0, 0, 50));
-
-            bars.push_back(bar);
-
-            // 创建平滑器
-            barHeights.push_back(SmoothValue<float>(10.0f, 20.0f));
+        // Initialize waveform vertices
+        for (int i = 0; i < WAVEFORM_POINTS; i++) {
+            float x = static_cast<float>(i) / (WAVEFORM_POINTS - 1) * WINDOW_WIDTH;
+            waveform[i].position = sf::Vector2f(x, WINDOW_HEIGHT / 2);
+            waveform[i].color = sf::Color::White;
         }
-
-        // 输出调试信息
-        std::cout << "First bar position: " << bars[0].getPosition().x << std::endl;
-        std::cout << "Last bar position: " << bars[count - 1].getPosition().x << std::endl;
-        std::cout << "Expected total width: " << WINDOW_WIDTH << std::endl;
-        std::cout << "Actual total width: "
-            << (bars[count - 1].getPosition().x + bars[count - 1].getSize().x)
-            << std::endl;
     }
 
-    void update(const std::vector<float>& bandEnergies, float dt, int frameCount) {
-        // 静态变量用于阻尼效果
-        static std::vector<float> prevEnergies(barCount, 0.0f);
+    void update(const std::vector<float>& samples, float volume, float time) {
+        if (samples.empty()) return;
 
-        for (int i = 0; i < barCount; i++) {
-            // 获取能量
-            float energy = (i < (int)bandEnergies.size()) ? bandEnergies[i] : 0.0f;
+        // Adjust waveform amplitude based on volume
+        float amplitude = scaleFactor * (5.0f + volume * 15.0f);
 
-            // 关键修改：增强阻尼效果，使变化更平滑
-            float smoothedEnergy = prevEnergies[i] * 0.95f + energy * 0.05f;
-            prevEnergies[i] = smoothedEnergy;
+        // Add some dynamic changes based on time
+        float timeOffset = sin(time * 2.0f) * 10.0f;
 
-            // 应用对数压缩 - 增强动态范围
-            float logEnergy = std::log10(1.0f + smoothedEnergy * 99.0f);
+        // Update waveform
+        for (int i = 0; i < WAVEFORM_POINTS; i++) {
+            // Calculate sample index (uniform sampling)
+            int sampleIndex = (i * samples.size()) / WAVEFORM_POINTS;
+            sampleIndex = std::min(sampleIndex, (int)samples.size() - 1);
 
-            // 计算目标高度
-            float targetHeight = logEnergy * maxHeight * 1.3f;
-            targetHeight = std::min(targetHeight, maxHeight);
-            targetHeight = std::max(targetHeight, 7.0f);
+            // Get sample value
+            float sampleValue = samples[sampleIndex];
 
-            // 添加额外的平滑：限制最大变化速率
-            float currentHeight = barHeights[i].getCurrent();
-            float maxChange = maxHeight * 0.1f * dt * 60.0f;  // 每秒最大变化为高度的10%
-            float limitedTargetHeight = currentHeight + std::clamp(targetHeight - currentHeight,
-                -maxChange, maxChange);
+            // Apply smoothing filter
+            static std::vector<float> prevValues(WAVEFORM_POINTS, 0.0f);
+            float smoothedValue = prevValues[i] * 0.7f + sampleValue * 0.3f;
+            prevValues[i] = smoothedValue;
 
-            // 平滑高度变化
-            barHeights[i].setTarget(targetHeight);
-            barHeights[i].update(dt);
+            // Calculate y coordinate (centered)
+            float x = static_cast<float>(i) / (WAVEFORM_POINTS - 1) * WINDOW_WIDTH;
+            float y = WINDOW_HEIGHT / 2 + smoothedValue * amplitude;
 
-            currentHeight = barHeights[i].getCurrent();
+            // Add time offset to make waveform dynamic
+            y += sin(i * 0.1f + time * 3.0f) * (5.0f + volume * 15.0f);
 
-            // 获取条的当前位置和宽度
-            float currentX = bars[i].getPosition().x;
-            float currentWidth = bars[i].getSize().x;
+            waveform[i].position = sf::Vector2f(x, y);
 
-            // 更新条的高度和位置
-            bars[i].setSize(sf::Vector2f(currentWidth, currentHeight));
-            bars[i].setPosition(currentX, WINDOW_HEIGHT - currentHeight);
+            // Set color based on position (rainbow gradient)
+            float hue = fmod(i * 0.5f + time * 50.0f, 360.0f);
+            float ratio = hue / 60.0f;
+            int sector = static_cast<int>(ratio) % 6;
+            float fraction = ratio - sector;
 
-            // 更新颜色 - 保持原来的彩虹色效果
-            float hue = fmod(i * 1.5f + frameCount * 0.5f, 360.0f);
-            sf::Color color = hsbToRgb(hue, 80.0f, 100.0f);
-            bars[i].setFillColor(color);
+            sf::Uint8 r, g, b;
+            switch (sector) {
+            case 0: r = 255; g = static_cast<sf::Uint8>(fraction * 255); b = 0; break;
+            case 1: r = static_cast<sf::Uint8>((1 - fraction) * 255); g = 255; b = 0; break;
+            case 2: r = 0; g = 255; b = static_cast<sf::Uint8>(fraction * 255); break;
+            case 3: r = 0; g = static_cast<sf::Uint8>((1 - fraction) * 255); b = 255; break;
+            case 4: r = static_cast<sf::Uint8>(fraction * 255); g = 0; b = 255; break;
+            default: r = 255; g = 0; b = static_cast<sf::Uint8>((1 - fraction) * 255); break;
+            }
+
+            // Adjust transparency based on volume
+            sf::Uint8 alpha = static_cast<sf::Uint8>(150 + volume * 105);
+            waveform[i].color = sf::Color(r, g, b, alpha);
         }
     }
 
     void draw(sf::RenderTarget& target) {
-        for (auto& bar : bars) {
-            target.draw(bar);
+        for (int offset = -10; offset <= 10; offset++) {
+            sf::VertexArray thickLine = waveform;
+            for (unsigned int i = 0; i < thickLine.getVertexCount(); i++) {
+                thickLine[i].position.y += static_cast<float>(offset) * 0.3f;
+            }
+            target.draw(thickLine);
         }
+
+        // Add some visual effects: draw gradient background below waveform
+        sf::VertexArray background(sf::Quads, 4);
+        background[0].position = sf::Vector2f(0, WINDOW_HEIGHT / 2 - WAVEFORM_HEIGHT / 2);
+        background[1].position = sf::Vector2f(WINDOW_WIDTH, WINDOW_HEIGHT / 2 - WAVEFORM_HEIGHT / 2);
+        background[2].position = sf::Vector2f(WINDOW_WIDTH, WINDOW_HEIGHT / 2 + WAVEFORM_HEIGHT / 2);
+        background[3].position = sf::Vector2f(0, WINDOW_HEIGHT / 2 + WAVEFORM_HEIGHT / 2);
+
+        background[0].color = sf::Color(10, 10, 40, 50);
+        background[1].color = sf::Color(10, 10, 40, 50);
+        background[2].color = sf::Color(10, 10, 40, 0);
+        background[3].color = sf::Color(10, 10, 40, 0);
+
+        target.draw(background);
+    }
+
+    void setScaleFactor(float scale) {
+        scaleFactor = scale;
     }
 };
 
 int main() {
-    std::cout << "=== Music Visualizer with Real FFT ===" << std::endl;
+    std::cout << "=== Waveform Visualizer Demo ===" << std::endl;
+    std::cout << "Visualizing audio waveform over time" << std::endl;
 
-    // 1. 创建窗口
+    // 1. Create window
     sf::RenderWindow window(sf::VideoMode(WINDOW_WIDTH, WINDOW_HEIGHT),
-        "Music Visualizer - Fixed Width Bars");
+        "Waveform Visualizer - Audio Waveform");
     window.setFramerateLimit(60);
 
-    // 2. 加载音频
+    // 2. Load audio
     sf::SoundBuffer soundBuffer;
     std::string musicPath = "C:\\Users\\zhaok\\Desktop\\dvorak_new_world.mp3";
 
     if (!soundBuffer.loadFromFile(musicPath)) {
-        std::cerr << "Error: Cannot load audio file!" << std::endl;
-        std::cout << "Please make sure the audio file exists: " << musicPath << std::endl;
-        return -1;
+        std::cerr << "Error: Unable to load audio file!" << std::endl;
+        std::cout << "Trying to load test.mp3..." << std::endl;
+        musicPath = "test.mp3";
+        if (!soundBuffer.loadFromFile(musicPath)) {
+            std::cerr << "Error: Unable to load any audio file!" << std::endl;
+            std::cout << "Will use simulated audio data..." << std::endl;
+        }
+        else {
+            std::cout << "Audio loaded successfully!" << std::endl;
+        }
+    }
+    else {
+        std::cout << "Audio loaded successfully!" << std::endl;
     }
 
-    std::cout << "Audio loaded successfully!" << std::endl;
-    std::cout << "Sample rate: " << soundBuffer.getSampleRate() << " Hz" << std::endl;
-    std::cout << "Channels: " << soundBuffer.getChannelCount() << std::endl;
-
-    // 3. 创建音频播放器
+    // 3. Create audio player
     sf::Sound sound;
-    sound.setBuffer(soundBuffer);
+    bool hasAudio = false;
 
-    // 4. 获取音频数据
-    const sf::Int16* allSamples = soundBuffer.getSamples();
-    size_t totalSamples = soundBuffer.getSampleCount();
-    unsigned int sampleRate = soundBuffer.getSampleRate();
-    unsigned int channels = soundBuffer.getChannelCount();
+    if (soundBuffer.getSampleCount() > 0) {
+        sound.setBuffer(soundBuffer);
+        hasAudio = true;
 
-    // 5. 创建频率条
-    FrequencyBars frequencyBars(VISUAL_BANDS, 600.0f);
+        std::cout << "Sample rate: " << soundBuffer.getSampleRate() << " Hz" << std::endl;
+        std::cout << "Channels: " << soundBuffer.getChannelCount() << std::endl;
+        std::cout << "Duration: " << soundBuffer.getDuration().asSeconds() << " seconds" << std::endl;
+    }
 
-    // 6. 时间管理
+    // 4. Get audio data
+    const sf::Int16* allSamples = nullptr;
+    size_t totalSamples = 0;
+    unsigned int sampleRate = 44100;
+    unsigned int channels = 2;
+
+    if (hasAudio) {
+        allSamples = soundBuffer.getSamples();
+        totalSamples = soundBuffer.getSampleCount();
+        sampleRate = soundBuffer.getSampleRate();
+        channels = soundBuffer.getChannelCount();
+    }
+
+    // 5. Create waveform visualizer
+    WaveformVisualizer waveform;
+
+    // 6. Time management
     sf::Clock frameClock;
+    sf::Clock audioClock;
     bool isPlaying = false;
     int frameCount = 0;
 
-    // 7. 创建拖尾效果纹理
-    sf::RenderTexture trailTexture;
-    if (!trailTexture.create(WINDOW_WIDTH, WINDOW_HEIGHT)) {
-        std::cerr << "Error: Cannot create render texture!" << std::endl;
-        return -1;
+    // 7. Smooth volume
+    SmoothValue<float> smoothedVolume(0.0f, 10.0f);
+
+    // 8. Add particle system as background (optional)
+    std::vector<sf::CircleShape> backgroundParticles;
+    for (int i = 0; i < 100; i++) {
+        sf::CircleShape particle(1.0f + (rand() % 100) / 100.0f * 3.0f);
+        particle.setPosition(
+            rand() % WINDOW_WIDTH,
+            rand() % WINDOW_HEIGHT
+        );
+        particle.setFillColor(sf::Color(50, 100, 200, 30));
+        backgroundParticles.push_back(particle);
     }
-    trailTexture.clear(sf::Color::Black);
-
-    // 8. 中央圆环 - 保持白色
-    sf::CircleShape centerCircle(0.0f);
-    centerCircle.setOrigin(centerCircle.getRadius(), centerCircle.getRadius());
-    centerCircle.setPosition(WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f);
-    centerCircle.setFillColor(sf::Color::Transparent);
-    centerCircle.setOutlineThickness(3.0f);
-    centerCircle.setOutlineColor(sf::Color::White);
-
-    SmoothValue<float> circleSize(0.0f, 10.0f);
-
-    // 9. FFT缓冲区
-    std::vector<float> audioBuffer(FFT_SIZE, 0.0f);
-    std::vector<float> spectrum;
-    std::vector<float> bandEnergies;
-
-    // 10. 平滑音量
-    SmoothValue<float> smoothedVolume(0.0f, 5.0f);
 
     std::cout << "\n=== Ready ===" << std::endl;
-    std::cout << "FFT Size: " << FFT_SIZE << std::endl;
-    std::cout << "Visual Bands: " << VISUAL_BANDS << std::endl;
     std::cout << "Controls:" << std::endl;
     std::cout << "  SPACE - Play/Pause" << std::endl;
     std::cout << "  ESC - Exit" << std::endl;
     std::cout << "  R - Restart" << std::endl;
+    std::cout << "  + - Increase waveform amplitude" << std::endl;
+    std::cout << "  - - Decrease waveform amplitude" << std::endl;
+    std::cout << "  C - Toggle color mode" << std::endl;
 
-    // 主循环
+    float currentScale = 100.0f;
+    bool colorMode = true;  // true: Colorful, false: Monochromatic
+
+    // Main loop
     while (window.isOpen()) {
         float dt = frameClock.restart().asSeconds();
         frameCount++;
 
-        // 事件处理
+        // Event handling
         sf::Event event;
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed)
@@ -374,15 +231,21 @@ int main() {
 
             if (event.type == sf::Event::KeyPressed) {
                 if (event.key.code == sf::Keyboard::Space) {
-                    if (sound.getStatus() == sf::Sound::Playing) {
-                        sound.pause();
-                        isPlaying = false;
-                        std::cout << "Music paused" << std::endl;
+                    if (hasAudio) {
+                        if (sound.getStatus() == sf::Sound::Playing) {
+                            sound.pause();
+                            isPlaying = false;
+                            std::cout << "Music paused" << std::endl;
+                        }
+                        else {
+                            sound.play();
+                            isPlaying = true;
+                            std::cout << "Music playing" << std::endl;
+                        }
                     }
                     else {
-                        sound.play();
-                        isPlaying = true;
-                        std::cout << "Music playing" << std::endl;
+                        isPlaying = !isPlaying;
+                        std::cout << (isPlaying ? "Simulation playing" : "Simulation paused") << std::endl;
                     }
                 }
 
@@ -390,112 +253,153 @@ int main() {
                     window.close();
 
                 if (event.key.code == sf::Keyboard::R) {
-                    sound.stop();
-                    sound.play();
-                    isPlaying = true;
-                    frameCount = 0;
-                    std::cout << "Music restarted" << std::endl;
-                }
-            }
-        }
-
-        // 拖尾效果：半透明黑色矩形
-        sf::RectangleShape trailRect(sf::Vector2f(WINDOW_WIDTH, WINDOW_HEIGHT));
-        trailRect.setFillColor(sf::Color(0, 0, 0, 30));
-        trailTexture.draw(trailRect, sf::BlendAlpha);
-
-        // 音频分析和FFT计算
-        float currentVolume = 0.0f;
-
-        if (sound.getStatus() == sf::Sound::Playing) {
-            // 使用getPlayingOffset()获取准确时间
-            sf::Time currentTime = sound.getPlayingOffset();
-
-            // 计算样本索引
-            size_t sampleIndex = static_cast<size_t>(currentTime.asSeconds() * sampleRate * channels);
-
-            if (sampleIndex + FFT_SIZE < totalSamples) {
-                // 准备FFT输入数据
-                audioBuffer.clear();
-                audioBuffer.resize(FFT_SIZE, 0.0f);
-
-                // 提取当前帧的音频数据
-                for (size_t i = 0; i < FFT_SIZE; i++) {
-                    if (sampleIndex + i < totalSamples) {
-                        if (channels == 2) {
-                            float left = allSamples[sampleIndex + i * 2] / 32768.0f;
-                            float right = allSamples[sampleIndex + i * 2 + 1] / 32768.0f;
-                            audioBuffer[i] = (left + right) / 2.0f;
-                        }
-                        else {
-                            audioBuffer[i] = allSamples[sampleIndex + i] / 32768.0f;
-                        }
+                    if (hasAudio) {
+                        sound.stop();
+                        sound.play();
+                        isPlaying = true;
+                        audioClock.restart();
+                        std::cout << "Restarted playback" << std::endl;
+                    }
+                    else {
+                        audioClock.restart();
+                        std::cout << "Reset simulation time" << std::endl;
                     }
                 }
 
-                // 应用汉宁窗
-                for (size_t i = 0; i < FFT_SIZE; i++) {
-                    float window = 0.5f * (1.0f - cos(2.0f * 3.14159265358979323846f * i / (FFT_SIZE - 1)));
-                    audioBuffer[i] *= window;
+                if (event.key.code == sf::Keyboard::Add || event.key.code == sf::Keyboard::Equal) {
+                    currentScale += 20.0f;
+                    waveform.setScaleFactor(currentScale);
+                    std::cout << "Waveform amplitude: " << currentScale << std::endl;
                 }
 
-                // 计算FFT
-                computeFFT(audioBuffer, spectrum);
+                if (event.key.code == sf::Keyboard::Subtract || event.key.code == sf::Keyboard::Dash) {
+                    currentScale = std::max(20.0f, currentScale - 20.0f);
+                    waveform.setScaleFactor(currentScale);
+                    std::cout << "Waveform amplitude: " << currentScale << std::endl;
+                }
 
-                // 计算当前音量
-                currentVolume = calculateEnergy(&allSamples[sampleIndex], std::min((size_t)1024, totalSamples - sampleIndex));
-                smoothedVolume.setTarget(currentVolume);
-
-                // 映射到可视化频段
-                bandEnergies = mapSpectrumToBands(spectrum, VISUAL_BANDS);
-            }
-        }
-        else {
-            // 音乐停止时，让能量逐渐衰减
-            currentVolume = 0.0f;
-            smoothedVolume.setTarget(0.0f);
-            // 让bandEnergies逐渐衰减而不是直接归零
-            for (auto& energy : bandEnergies) {
-                energy *= 0.9f;
+                if (event.key.code == sf::Keyboard::C) {
+                    colorMode = !colorMode;
+                    std::cout << "Color mode: " << (colorMode ? "Colorful" : "Monochromatic") << std::endl;
+                }
             }
         }
 
-        // 更新平滑音量
+        // Clear screen
+        window.clear(sf::Color(10, 10, 30));
+
+        // Draw background particles
+        for (auto& particle : backgroundParticles) {
+            // Move particles slowly
+            particle.move(0.1f, 0.05f);
+
+            // Reset position if particle moves off screen
+            if (particle.getPosition().y > WINDOW_HEIGHT) {
+                particle.setPosition(
+                    rand() % WINDOW_WIDTH,
+                    -10.0f
+                );
+            }
+
+            window.draw(particle);
+        }
+
+        // Get audio data and time
+        float currentTime = 0.0f;
+        float currentVolume = 0.0f;
+        std::vector<float> currentSamples;
+
+        if (hasAudio && isPlaying) {
+            // Get current playback time
+            currentTime = sound.getPlayingOffset().asSeconds();
+
+            // Calculate sample index
+            size_t sampleIndex = static_cast<size_t>(
+                currentTime * sampleRate * channels
+                );
+
+            // Analysis window size
+            const size_t ANALYSIS_SIZE = 4096;
+
+            if (sampleIndex + ANALYSIS_SIZE < totalSamples) {
+                // Calculate current volume
+                currentVolume = calculateVolume(
+                    &allSamples[sampleIndex],
+                    std::min(ANALYSIS_SIZE, totalSamples - sampleIndex)
+                );
+
+                // Extract sample data for waveform display
+                currentSamples.resize(ANALYSIS_SIZE);
+                for (size_t i = 0; i < ANALYSIS_SIZE; i++) {
+                    if (sampleIndex + i < totalSamples) {
+                        // If stereo, take average
+                        if (channels == 2) {
+                            float left = allSamples[sampleIndex + i * 2] / 32768.0f;
+                            float right = allSamples[sampleIndex + i * 2 + 1] / 32768.0f;
+                            currentSamples[i] = (left + right) / 2.0f;
+                        }
+                        else {
+                            currentSamples[i] = allSamples[sampleIndex + i] / 32768.0f;
+                        }
+                    }
+                    else {
+                        currentSamples[i] = 0.0f;
+                    }
+                }
+            }
+        }
+        else if (isPlaying) {
+            // Simulate audio data (for demonstration)
+            currentTime = audioClock.getElapsedTime().asSeconds();
+
+            // Generate simulated audio data
+            currentSamples.resize(4096);
+            float baseFrequency = 220.0f;  // A3 note
+            float melodyFrequency = 440.0f;  // A4 note
+
+            for (size_t i = 0; i < currentSamples.size(); i++) {
+                // Base waveform (sine wave)
+                float t = currentTime + i / 44100.0f;
+
+                // Melody (high frequency)
+                float melody = sin(t * melodyFrequency * 2.0f * 3.14159f);
+
+                // Harmony (low frequency)
+                float harmony = sin(t * baseFrequency * 2.0f * 3.14159f) * 0.3f;
+
+                // Rhythm (envelope)
+                float envelope = 0.5f + 0.5f * sin(t * 2.0f);
+
+                // Combine waveforms
+                currentSamples[i] = (melody + harmony) * envelope * 0.5f;
+
+                // Add some noise to make the waveform more realistic
+                currentSamples[i] += ((rand() % 100) / 100.0f - 0.5f) * 0.05f;
+            }
+
+            // Simulated volume (changes over time)
+            currentVolume = 0.5f + 0.3f * sin(currentTime * 0.5f);
+        }
+
+        // Smooth volume
+        smoothedVolume.setTarget(currentVolume);
         smoothedVolume.update(dt);
 
-        // 更新频率条
-        frequencyBars.update(bandEnergies, dt, frameCount);
-
-        // 更新中央圆环
-        float targetCircleSize = smoothedVolume.getCurrent() * 2200.0f;
-        targetCircleSize = std::min(targetCircleSize, 400.0f);
-
-        circleSize.setTarget(targetCircleSize);
-        circleSize.update(dt);
-
-        float currentCircleSize = circleSize.getCurrent();
-        centerCircle.setRadius(currentCircleSize);
-        centerCircle.setOrigin(currentCircleSize, currentCircleSize);
-
-        // 绘制频率条到拖尾纹理
-        frequencyBars.draw(trailTexture);
-
-        // 绘制中央圆环到拖尾纹理
-        if (currentCircleSize > 5.0f) {
-            trailTexture.draw(centerCircle);
+        // Update waveform visualizer
+        if (!currentSamples.empty()) {
+            waveform.update(currentSamples, smoothedVolume.getCurrent(), currentTime);
         }
 
-        // 完成拖尾纹理绘制
-        trailTexture.display();
+        // Draw waveform
+        waveform.draw(window);
 
-        // 渲染到窗口
-        window.clear(sf::Color::Black);
+        // Draw center reference line
+        sf::RectangleShape centerLine(sf::Vector2f(WINDOW_WIDTH, 1));
+        centerLine.setPosition(0, WINDOW_HEIGHT / 2);
+        centerLine.setFillColor(sf::Color(255, 255, 255, 50));
+        window.draw(centerLine);
 
-        // 绘制拖尾纹理
-        sf::Sprite trailSprite(trailTexture.getTexture());
-        window.draw(trailSprite);
-
-        // 绘制UI信息
+        // Draw UI information
         sf::Font font;
         if (font.loadFromFile("C:/Windows/Fonts/arial.ttf")) {
             sf::Text infoText;
@@ -504,17 +408,45 @@ int main() {
             infoText.setFillColor(sf::Color::White);
             infoText.setPosition(20, 20);
 
-            std::string info = "Music Visualizer - Fixed Frequency Bars\n";
-            info += isPlaying ? "Status: Playing" : "Status: Paused";
+            std::string info = "Waveform Visualizer Demo\n";
+            info += hasAudio ? "Audio file: Loaded" : "Audio file: Simulated data";
+            info += "\nStatus: " + std::string(isPlaying ? "Playing" : "Paused");
             info += "\nVolume: " + std::to_string(smoothedVolume.getCurrent());
-            info += "\nFrame: " + std::to_string(frameCount);
-            info += "\nTime: " + std::to_string(sound.getPlayingOffset().asSeconds()) + "s";
-            info += "\nCircle size: " + std::to_string(currentCircleSize);
+            info += "\nTime: " + std::to_string(currentTime) + "s";
+            info += "\nWaveform points: " + std::to_string(WAVEFORM_POINTS);
+            info += "\nWaveform amplitude: " + std::to_string(currentScale);
+            info += "\nColor mode: " + std::string(colorMode ? "Colorful" : "Monochromatic");
 
             infoText.setString(info);
             window.draw(infoText);
+
+            // Draw control instructions
+            sf::Text controlsText;
+            controlsText.setFont(font);
+            controlsText.setCharacterSize(18);
+            controlsText.setFillColor(sf::Color(200, 200, 200));
+            controlsText.setPosition(WINDOW_WIDTH - 300, 20);
+
+            std::string controls = "Controls:\n";
+            controls += "SPACE: Play/Pause\n";
+            controls += "R: Restart\n";
+            controls += "+/-: Adjust waveform amplitude\n";
+            controls += "C: Toggle color mode\n";
+            controls += "ESC: Exit";
+
+            controlsText.setString(controls);
+            window.draw(controlsText);
         }
 
+        // Draw waveform description
+        sf::Text waveText;
+        waveText.setFont(font);
+        waveText.setCharacterSize(24);
+        waveText.setFillColor(sf::Color(150, 200, 255));
+        waveText.setPosition(WINDOW_WIDTH / 2 - 150, WINDOW_HEIGHT - 100);
+        window.draw(waveText);
+
+        // Display final frame
         window.display();
     }
 
